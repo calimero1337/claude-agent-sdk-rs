@@ -232,8 +232,23 @@ impl Message {
     pub fn parse(data: &serde_json::Value) -> Option<Self> {
         let msg_type = data.get("type")?.as_str()?;
         match msg_type {
-            "user" => serde_json::from_value(data.clone()).ok().map(Message::User),
-            "assistant" => serde_json::from_value(data.clone()).ok().map(Message::Assistant),
+            "user" => {
+                // The CLI may wrap user messages: {"type": "user", "message": {...}}
+                if let Some(inner) = data.get("message") {
+                    serde_json::from_value(inner.clone()).ok().map(Message::User)
+                } else {
+                    serde_json::from_value(data.clone()).ok().map(Message::User)
+                }
+            }
+            "assistant" => {
+                // The CLI wraps assistant messages: {"type": "assistant", "message": {...}}
+                // Try the wrapped format first, fall back to flat.
+                if let Some(inner) = data.get("message") {
+                    serde_json::from_value(inner.clone()).ok().map(Message::Assistant)
+                } else {
+                    serde_json::from_value(data.clone()).ok().map(Message::Assistant)
+                }
+            }
             "system" => {
                 let subtype = data.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
                 let data_field = data.get("data").cloned().unwrap_or_default();
