@@ -59,6 +59,12 @@ pub struct AssistantMessage {
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_tool_use_id: Option<String>,
+    /// Error field present when the assistant encountered an error.
+    #[serde(default)]
+    pub error: Option<String>,
+    /// Token usage statistics for this message.
+    #[serde(default)]
+    pub usage: Option<serde_json::Value>,
 }
 
 impl AssistantMessage {
@@ -100,6 +106,12 @@ pub struct ResultMessage {
     pub usage: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
+    /// The reason the model stopped generating (e.g. "end_turn", "tool_use").
+    #[serde(default)]
+    pub stop_reason: Option<String>,
+    /// Structured output from the model when a structured output schema was used.
+    #[serde(default)]
+    pub structured_output: Option<serde_json::Value>,
 }
 
 /// A task_started system message from the CLI.
@@ -131,6 +143,49 @@ pub struct TaskNotificationMessage {
     pub session_id: Option<String>,
 }
 
+/// Rate limit status from the CLI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitStatus {
+    Allowed,
+    AllowedWarning,
+    Rejected,
+}
+
+/// Rate limit information from the CLI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitInfo {
+    pub status: RateLimitStatus,
+    #[serde(default)]
+    pub resets_at: Option<String>,
+    #[serde(default)]
+    pub rate_limit_type: Option<String>,
+    #[serde(default)]
+    pub utilization: Option<f64>,
+}
+
+/// A rate limit event from the CLI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitEvent {
+    pub rate_limit_info: RateLimitInfo,
+    #[serde(default)]
+    pub uuid: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+/// A stream event from the CLI (partial message updates).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamEventMessage {
+    #[serde(default)]
+    pub uuid: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    pub event: serde_json::Value,
+    #[serde(default)]
+    pub parent_tool_use_id: Option<String>,
+}
+
 /// Parsed message from the Claude CLI.
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -141,6 +196,10 @@ pub enum Message {
     TaskStarted(TaskStartedMessage),
     TaskProgress(TaskProgressMessage),
     TaskNotification(TaskNotificationMessage),
+    /// A rate limit event from the CLI.
+    RateLimit(RateLimitEvent),
+    /// A stream event from the CLI (partial message updates).
+    Stream(StreamEventMessage),
 }
 
 impl Message {
@@ -167,6 +226,8 @@ impl Message {
                 }
             }
             "result" => serde_json::from_value(data.clone()).ok().map(Message::Result),
+            "rate_limit_event" => serde_json::from_value(data.clone()).ok().map(Message::RateLimit),
+            "stream_event" => serde_json::from_value(data.clone()).ok().map(Message::Stream),
             _ => None, // Forward-compatible: skip unknown types
         }
     }
@@ -250,5 +311,183 @@ mod tests {
         });
         let msg = Message::parse(&raw);
         assert!(matches!(msg, Some(Message::System(_))));
+    }
+
+    // ── Feature 2: RateLimitEvent ────────────────────────────────────────────
+
+    #[test]
+    fn parse_rate_limit_event_allowed() {
+        let raw = serde_json::json!({
+            "type": "rate_limit_event",
+            "rate_limit_info": {
+                "status": "allowed",
+                "resets_at": "2026-03-22T10:00:00Z",
+                "rate_limit_type": "requests_per_minute",
+                "utilization": 0.42
+            },
+            "uuid": "rl-uuid-1",
+            "session_id": "sess-1"
+        });
+        let msg = Message::parse(&raw).expect("should parse");
+        match msg {
+            Message::RateLimit(evt) => {
+                assert!(matches!(evt.rate_limit_info.status, RateLimitStatus::Allowed));
+                assert_eq!(evt.rate_limit_info.resets_at.as_deref(), Some("2026-03-22T10:00:00Z"));
+                assert_eq!(
+                    evt.rate_limit_info.rate_limit_type.as_deref(),
+                    Some("requests_per_minute")
+                );
+                assert!((evt.rate_limit_info.utilization.unwrap() - 0.42).abs() < f64::EPSILON);
+                assert_eq!(evt.uuid.as_deref(), Some("rl-uuid-1"));
+                assert_eq!(evt.session_id.as_deref(), Some("sess-1"));
+            }
+            other => panic!("expected RateLimit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_rate_limit_event_rejected() {
+        let raw = serde_json::json!({
+            "type": "rate_limit_event",
+            "rate_limit_info": { "status": "rejected" }
+        });
+        let msg = Message::parse(&raw).expect("should parse");
+        assert!(matches!(
+            msg,
+            Message::RateLimit(ref evt)
+                if matches!(evt.rate_limit_info.status, RateLimitStatus::Rejected)
+        ));
+    }
+
+    #[test]
+    fn parse_rate_limit_event_allowed_warning() {
+        let raw = serde_json::json!({
+            "type": "rate_limit_event",
+            "rate_limit_info": { "status": "allowed_warning" }
+        });
+        let msg = Message::parse(&raw).expect("should parse");
+        assert!(matches!(
+            msg,
+            Message::RateLimit(ref evt)
+                if matches!(evt.rate_limit_info.status, RateLimitStatus::AllowedWarning)
+        ));
+    }
+
+    // ── Feature 3: ResultMessage stop_reason + structured_output ────────────
+
+    #[test]
+    fn parse_result_message_with_stop_reason() {
+        let raw = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "session_id": "sess-42",
+            "duration_ms": 1500,
+            "duration_api_ms": 800,
+            "is_error": false,
+            "num_turns": 3,
+            "stop_reason": "end_turn",
+            "structured_output": { "answer": 42, "unit": "items" }
+        });
+        let msg = Message::parse(&raw).expect("should parse");
+        match msg {
+            Message::Result(r) => {
+                assert_eq!(r.stop_reason.as_deref(), Some("end_turn"));
+                let structured = r.structured_output.expect("structured_output present");
+                assert_eq!(structured["answer"], 42);
+            }
+            other => panic!("expected Result, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_result_message_stop_reason_absent_is_none() {
+        let raw = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "session_id": "sess-43"
+        });
+        let msg = Message::parse(&raw).expect("should parse");
+        if let Message::Result(r) = msg {
+            assert!(r.stop_reason.is_none());
+            assert!(r.structured_output.is_none());
+        } else {
+            panic!("expected Result");
+        }
+    }
+
+    // ── Feature 4: AssistantMessage error + usage ────────────────────────────
+
+    #[test]
+    fn parse_assistant_message_with_error_and_usage() {
+        let raw = serde_json::json!({
+            "type": "assistant",
+            "model": "claude-opus-4",
+            "content": [],
+            "error": "context_length_exceeded",
+            "usage": { "input_tokens": 100, "output_tokens": 0 }
+        });
+        let msg = Message::parse(&raw).expect("should parse");
+        match msg {
+            Message::Assistant(a) => {
+                assert_eq!(a.error.as_deref(), Some("context_length_exceeded"));
+                let usage = a.usage.expect("usage present");
+                assert_eq!(usage["input_tokens"], 100);
+            }
+            other => panic!("expected Assistant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_assistant_message_without_error_fields() {
+        let raw = serde_json::json!({
+            "type": "assistant",
+            "model": "claude-opus-4",
+            "content": [{ "type": "text", "text": "Hello" }]
+        });
+        let msg = Message::parse(&raw).expect("should parse");
+        if let Message::Assistant(a) = msg {
+            assert!(a.error.is_none());
+            assert!(a.usage.is_none());
+            assert_eq!(a.text_content(), "Hello");
+        } else {
+            panic!("expected Assistant");
+        }
+    }
+
+    // ── Feature 5: StreamEventMessage ────────────────────────────────────────
+
+    #[test]
+    fn parse_stream_event_message() {
+        let raw = serde_json::json!({
+            "type": "stream_event",
+            "uuid": "stream-uuid-1",
+            "session_id": "sess-stream-1",
+            "event": {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "text_delta", "text": "Hello " }
+            },
+            "parent_tool_use_id": null
+        });
+        let msg = Message::parse(&raw).expect("should parse");
+        match msg {
+            Message::Stream(s) => {
+                assert_eq!(s.uuid.as_deref(), Some("stream-uuid-1"));
+                assert_eq!(s.session_id.as_deref(), Some("sess-stream-1"));
+                assert_eq!(s.event["type"], "content_block_delta");
+                assert!(s.parent_tool_use_id.is_none());
+            }
+            other => panic!("expected Stream, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_stream_event_message_minimal() {
+        let raw = serde_json::json!({
+            "type": "stream_event",
+            "event": { "type": "message_stop" }
+        });
+        let msg = Message::parse(&raw).expect("should parse");
+        assert!(matches!(msg, Message::Stream(ref s) if s.event["type"] == "message_stop"));
     }
 }

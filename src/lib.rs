@@ -51,8 +51,9 @@ pub use query::{query, QueryResult};
 pub use types::control::{ControlRequest, ControlRequestBody, ControlResponse, ControlResponseBody};
 pub use types::event::{ContentDelta, StopReason, StreamEvent, TokenUsage};
 pub use types::message::{
-    AssistantMessage, ContentBlock, Message, ResultMessage, Role, SystemMessage,
-    TaskNotificationMessage, TaskProgressMessage, TaskStartedMessage, UserMessage,
+    AssistantMessage, ContentBlock, Message, RateLimitEvent, RateLimitInfo, RateLimitStatus,
+    ResultMessage, Role, StreamEventMessage, SystemMessage, TaskNotificationMessage,
+    TaskProgressMessage, TaskStartedMessage, UserMessage,
 };
 pub use types::options::{ClaudeAgentOptions, Effort, McpServerConfig, PermissionMode};
 pub use types::params::{AgentParams, AgentParamsBuilder, MaxTurns};

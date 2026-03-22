@@ -127,6 +127,22 @@ impl ClaudeClient {
         transport.send_user_message(message).await
     }
 
+    /// Interrupt the currently running agent session.
+    ///
+    /// Sends a control request with subtype "interrupt" to the CLI,
+    /// which gracefully stops the current operation.
+    pub async fn interrupt(&mut self) -> Result<(), ClaudeAgentError> {
+        let transport = self.transport.as_mut()
+            .ok_or_else(|| ClaudeAgentError::ConnectionError("not connected".into()))?;
+
+        let msg = serde_json::json!({
+            "type": "control_request",
+            "request_id": uuid::Uuid::new_v4().to_string(),
+            "request": { "subtype": "interrupt" }
+        });
+        transport.write_message(&msg).await
+    }
+
     /// Get the current session ID (available after first response).
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
@@ -336,5 +352,20 @@ mod tests {
         };
         let resp = client.handle_control_request(&req);
         assert!(resp.response.allowed);
+    }
+
+    // ── Feature 1: interrupt() ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn interrupt_returns_error_when_not_connected() {
+        let mut client = make_client();
+        // No transport — must return a ConnectionError, not panic.
+        let result = client.interrupt().await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ClaudeAgentError::ConnectionError(_)),
+            "expected ConnectionError, got: {err}"
+        );
     }
 }
