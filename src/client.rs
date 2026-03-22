@@ -143,6 +143,25 @@ impl ClaudeClient {
         transport.write_message(&msg).await
     }
 
+    /// Close stdin to signal end of input (one-shot mode).
+    ///
+    /// Call this after `connect()` + `send_user_message()` to tell the CLI
+    /// there will be no more messages. The session continues to produce
+    /// output — call `receive_response()` to collect it.
+    pub async fn close_stdin(&mut self) -> Result<(), ClaudeAgentError> {
+        if let Some(ref mut transport) = self.transport {
+            transport.close_stdin().await?;
+        }
+        Ok(())
+    }
+
+    /// Drop stdin immediately (alternative to `close_stdin` for one-shot).
+    pub fn drop_stdin(&mut self) {
+        if let Some(ref mut transport) = self.transport {
+            transport.drop_stdin();
+        }
+    }
+
     /// Get the current session ID (available after first response).
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
