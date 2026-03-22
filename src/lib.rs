@@ -40,6 +40,7 @@ pub mod error;
 pub mod hooks;
 pub mod query;
 pub mod transport;
+pub mod transport_trait;
 pub mod types;
 
 // ── Public API re-exports ────────────────────────────────────────────────────
@@ -48,6 +49,7 @@ pub use client::ClaudeClient;
 pub use error::ClaudeAgentError;
 pub use hooks::{HookHandler, NoopHookHandler};
 pub use query::{query, QueryResult};
+pub use transport_trait::Transport;
 pub use types::control::{ControlRequest, ControlRequestBody, ControlResponse, ControlResponseBody};
 pub use types::event::{ContentDelta, StopReason, StreamEvent, TokenUsage};
 pub use types::message::{
@@ -55,7 +57,10 @@ pub use types::message::{
     ResultMessage, Role, StreamEventMessage, SystemMessage, TaskNotificationMessage,
     TaskProgressMessage, TaskStartedMessage, UserMessage,
 };
-pub use types::options::{ClaudeAgentOptions, Effort, McpServerConfig, PermissionMode};
+pub use types::options::{
+    AgentDefinition, ClaudeAgentOptions, Effort, McpServerConfig, PermissionMode, StderrCallback,
+    ThinkingConfig,
+};
 pub use types::params::{AgentParams, AgentParamsBuilder, MaxTurns};
 pub use types::tool::{Tool, ToolChoice, ToolResult, ToolResultContent, ToolUseBlock};
 

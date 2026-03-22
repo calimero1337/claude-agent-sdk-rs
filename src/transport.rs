@@ -11,13 +11,14 @@ use tokio::process::{Child, Command};
 use tracing::{debug, warn};
 
 use crate::error::ClaudeAgentError;
-use crate::types::options::ClaudeAgentOptions;
+use crate::types::options::{ClaudeAgentOptions, StderrCallback};
 
 /// A subprocess-based transport that communicates with the Claude CLI.
 pub struct SubprocessTransport {
     child: Child,
     stdin: Option<tokio::process::ChildStdin>,
     stdout_lines: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+    stderr_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl SubprocessTransport {
@@ -67,10 +68,29 @@ impl SubprocessTransport {
 
         let stdout_lines = BufReader::new(stdout).lines();
 
+        // Capture stderr and drain it asynchronously to prevent pipe-buffer
+        // deadlock. Lines are forwarded to the user callback (if set) or
+        // logged at DEBUG level.
+        let stderr = child.stderr.take();
+        let stderr_callback: Option<StderrCallback> = options.stderr_callback.clone();
+        let stderr_handle = stderr.map(|stderr| {
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if let Some(ref cb) = stderr_callback {
+                        cb.call(&line);
+                    } else {
+                        tracing::debug!(stderr = %line, "claude CLI stderr");
+                    }
+                }
+            })
+        });
+
         Ok(Self {
             child,
             stdin: Some(stdin),
             stdout_lines,
+            stderr_handle,
         })
     }
 
@@ -154,6 +174,10 @@ impl SubprocessTransport {
 
     /// Wait for the child process to exit and return its status.
     pub async fn wait(&mut self) -> Result<std::process::ExitStatus, ClaudeAgentError> {
+        // Abort the stderr drain task — the process is done.
+        if let Some(handle) = self.stderr_handle.take() {
+            handle.abort();
+        }
         self.child.wait().await.map_err(ClaudeAgentError::IoError)
     }
 
