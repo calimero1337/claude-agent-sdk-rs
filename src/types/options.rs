@@ -37,6 +37,19 @@ pub enum McpServerConfig {
         #[serde(default, skip_serializing_if = "HashMap::is_empty")]
         headers: HashMap<String, String>,
     },
+    /// In-process SDK-hosted MCP server.
+    Sdk {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        instance: Option<String>,
+    },
+    /// Claude AI proxy server.
+    #[serde(rename = "claudeai-proxy")]
+    ClaudeAiProxy {
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
 }
 
 /// Effort level for the Claude CLI session.
@@ -79,6 +92,45 @@ pub enum ThinkingConfig {
     Enabled { budget_tokens: u32 },
     /// Thinking disabled.
     Disabled,
+}
+
+/// Sandbox network configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SandboxNetworkConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+/// Controls which sandbox violation types to ignore.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SandboxIgnoreViolations {
+    #[serde(default)]
+    pub file: bool,
+    #[serde(default)]
+    pub network: bool,
+}
+
+/// Sandbox configuration for isolated execution.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SandboxSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<SandboxNetworkConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignore_violations: Option<SandboxIgnoreViolations>,
+}
+
+/// Configuration for an SDK plugin.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdkPluginConfig {
+    #[serde(rename = "type")]
+    pub plugin_type: String,
+    pub path: String,
 }
 
 /// A clonable, debuggable wrapper around a stderr line callback.
@@ -159,6 +211,19 @@ pub struct ClaudeAgentOptions {
     /// a single process). When `None`, stderr lines are logged at `DEBUG` level
     /// via `tracing`.
     pub stderr_callback: Option<StderrCallback>,
+    // ── P2 features ──────────────────────────────────────────────────────────
+    /// Fork the current session instead of starting a new one (--fork-session).
+    pub fork_session: bool,
+    /// Include partial messages in the output stream (--include-partial-messages).
+    pub include_partial_messages: bool,
+    /// Sandbox configuration for isolated execution.
+    pub sandbox: Option<SandboxSettings>,
+    /// SDK plugin configurations.
+    pub plugins: Vec<SdkPluginConfig>,
+    /// Maximum buffer size for reading messages (API parity; currently advisory).
+    pub max_buffer_size: Option<usize>,
+    /// User identifier for SDK metadata (not forwarded as CLI flag).
+    pub user: Option<String>,
 }
 
 impl ClaudeAgentOptions {
@@ -296,6 +361,33 @@ impl ClaudeAgentOptions {
                 }
             }
         }
+
+        // ── P2 features ──────────────────────────────────────────────────────
+
+        if self.fork_session {
+            args.push("--fork-session".to_string());
+        }
+
+        if self.include_partial_messages {
+            args.push("--include-partial-messages".to_string());
+        }
+
+        // Merge sandbox settings into --settings JSON if provided.
+        if let Some(ref sandbox) = self.sandbox {
+            if let Ok(sandbox_json) = serde_json::to_value(sandbox) {
+                let settings = serde_json::json!({ "sandbox": sandbox_json });
+                args.push("--settings".to_string());
+                args.push(settings.to_string());
+            }
+        }
+
+        // Pass plugin directories via --plugin-dir.
+        for plugin in &self.plugins {
+            args.push("--plugin-dir".to_string());
+            args.push(plugin.path.clone());
+        }
+
+        // max_buffer_size and user are not forwarded as CLI flags.
 
         args
     }
@@ -604,5 +696,201 @@ mod tests {
         let cb = StderrCallback(Arc::new(|_line: &str| {}));
         let debug_str = format!("{:?}", cb);
         assert_eq!(debug_str, "StderrCallback(<fn>)");
+    }
+
+    // ── P2 Feature 1: --fork-session ─────────────────────────────────────────
+
+    #[test]
+    fn fork_session_adds_flag() {
+        let opts = ClaudeAgentOptions {
+            fork_session: true,
+            ..Default::default()
+        };
+        let args = opts.to_cli_args();
+        assert!(args.contains(&"--fork-session".to_string()));
+    }
+
+    #[test]
+    fn fork_session_false_does_not_add_flag() {
+        let opts = ClaudeAgentOptions::default();
+        let args = opts.to_cli_args();
+        assert!(!args.contains(&"--fork-session".to_string()));
+    }
+
+    // ── P2 Feature 2: --include-partial-messages ──────────────────────────────
+
+    #[test]
+    fn include_partial_messages_adds_flag() {
+        let opts = ClaudeAgentOptions {
+            include_partial_messages: true,
+            ..Default::default()
+        };
+        let args = opts.to_cli_args();
+        assert!(args.contains(&"--include-partial-messages".to_string()));
+    }
+
+    #[test]
+    fn include_partial_messages_false_does_not_add_flag() {
+        let opts = ClaudeAgentOptions::default();
+        let args = opts.to_cli_args();
+        assert!(!args.contains(&"--include-partial-messages".to_string()));
+    }
+
+    // ── P2 Feature 4: McpServerConfig Sdk + ClaudeAiProxy variants ───────────
+
+    #[test]
+    fn mcp_sdk_variant_serializes() {
+        let cfg = McpServerConfig::Sdk {
+            name: "my-server".to_string(),
+            instance: Some("inst-1".to_string()),
+        };
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["type"], "sdk");
+        assert_eq!(json["name"], "my-server");
+        assert_eq!(json["instance"], "inst-1");
+    }
+
+    #[test]
+    fn mcp_sdk_variant_no_instance_omits_field() {
+        let cfg = McpServerConfig::Sdk {
+            name: "my-server".to_string(),
+            instance: None,
+        };
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert!(json.get("instance").is_none());
+    }
+
+    #[test]
+    fn mcp_claude_ai_proxy_variant_serializes() {
+        let cfg = McpServerConfig::ClaudeAiProxy {
+            url: "https://proxy.example.com".to_string(),
+            id: Some("proxy-1".to_string()),
+        };
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["type"], "claudeai-proxy");
+        assert_eq!(json["url"], "https://proxy.example.com");
+        assert_eq!(json["id"], "proxy-1");
+    }
+
+    #[test]
+    fn mcp_claude_ai_proxy_no_id_omits_field() {
+        let cfg = McpServerConfig::ClaudeAiProxy {
+            url: "https://proxy.example.com".to_string(),
+            id: None,
+        };
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert!(json.get("id").is_none());
+    }
+
+    // ── P2 Feature 5: SandboxSettings ────────────────────────────────────────
+
+    #[test]
+    fn sandbox_settings_added_to_args() {
+        let opts = ClaudeAgentOptions {
+            sandbox: Some(SandboxSettings {
+                enabled: true,
+                sandbox_type: Some("docker".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let args = opts.to_cli_args();
+        assert!(args.contains(&"--settings".to_string()));
+        let idx = args.iter().position(|a| a == "--settings").unwrap();
+        let settings_json: serde_json::Value =
+            serde_json::from_str(&args[idx + 1]).expect("valid JSON");
+        assert_eq!(settings_json["sandbox"]["enabled"], true);
+        assert_eq!(settings_json["sandbox"]["sandbox_type"], "docker");
+    }
+
+    #[test]
+    fn sandbox_none_does_not_add_settings_flag() {
+        let opts = ClaudeAgentOptions::default();
+        let args = opts.to_cli_args();
+        assert!(!args.contains(&"--settings".to_string()));
+    }
+
+    #[test]
+    fn sandbox_settings_serialization_round_trip() {
+        let settings = SandboxSettings {
+            enabled: true,
+            sandbox_type: Some("docker".to_string()),
+            image: Some("ubuntu:22.04".to_string()),
+            network: Some(SandboxNetworkConfig { enabled: false }),
+            ignore_violations: Some(SandboxIgnoreViolations { file: true, network: false }),
+        };
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["enabled"], true);
+        assert_eq!(json["sandbox_type"], "docker");
+        assert_eq!(json["image"], "ubuntu:22.04");
+        assert_eq!(json["network"]["enabled"], false);
+        assert_eq!(json["ignore_violations"]["file"], true);
+    }
+
+    // ── P2 Feature 6: SdkPluginConfig / --plugin-dir ─────────────────────────
+
+    #[test]
+    fn plugin_dir_added_to_args() {
+        let opts = ClaudeAgentOptions {
+            plugins: vec![
+                SdkPluginConfig {
+                    plugin_type: "local".to_string(),
+                    path: "/opt/plugins/my-plugin".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+        let args = opts.to_cli_args();
+        let idx = args.iter().position(|a| a == "--plugin-dir").expect("--plugin-dir missing");
+        assert_eq!(args[idx + 1], "/opt/plugins/my-plugin");
+    }
+
+    #[test]
+    fn multiple_plugins_each_get_flag() {
+        let opts = ClaudeAgentOptions {
+            plugins: vec![
+                SdkPluginConfig { plugin_type: "local".to_string(), path: "/p1".to_string() },
+                SdkPluginConfig { plugin_type: "local".to_string(), path: "/p2".to_string() },
+            ],
+            ..Default::default()
+        };
+        let args = opts.to_cli_args();
+        let count = args.iter().filter(|a| a.as_str() == "--plugin-dir").count();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn no_plugins_means_no_plugin_dir_flag() {
+        let opts = ClaudeAgentOptions::default();
+        let args = opts.to_cli_args();
+        assert!(!args.contains(&"--plugin-dir".to_string()));
+    }
+
+    // ── P2 Feature 14: max_buffer_size ────────────────────────────────────────
+
+    #[test]
+    fn max_buffer_size_stored_not_in_args() {
+        let opts = ClaudeAgentOptions {
+            max_buffer_size: Some(65536),
+            ..Default::default()
+        };
+        assert_eq!(opts.max_buffer_size, Some(65536));
+        // It must not appear in CLI args.
+        let args = opts.to_cli_args();
+        assert!(!args.iter().any(|a| a.contains("buffer")));
+    }
+
+    // ── P2 Feature 15: user field ─────────────────────────────────────────────
+
+    #[test]
+    fn user_field_stored_not_in_args() {
+        let opts = ClaudeAgentOptions {
+            user: Some("user-42".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(opts.user.as_deref(), Some("user-42"));
+        // It must not appear in CLI args.
+        let args = opts.to_cli_args();
+        assert!(!args.iter().any(|a| a.contains("user-42")));
     }
 }

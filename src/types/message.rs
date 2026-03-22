@@ -121,6 +121,13 @@ pub struct TaskStartedMessage {
     pub description: String,
     #[serde(default)]
     pub session_id: Option<String>,
+    // ── P2 Feature 11: additional fields ─────────────────────────────────────
+    #[serde(default)]
+    pub uuid: Option<String>,
+    #[serde(default)]
+    pub tool_use_id: Option<String>,
+    #[serde(default)]
+    pub task_type: Option<String>,
 }
 
 /// A task_progress system message from the CLI.
@@ -130,6 +137,15 @@ pub struct TaskProgressMessage {
     pub description: String,
     #[serde(default)]
     pub session_id: Option<String>,
+    // ── P2 Feature 11: additional fields ─────────────────────────────────────
+    #[serde(default)]
+    pub uuid: Option<String>,
+    #[serde(default)]
+    pub tool_use_id: Option<String>,
+    #[serde(default)]
+    pub last_tool_name: Option<String>,
+    #[serde(default)]
+    pub usage: Option<serde_json::Value>,
 }
 
 /// A task_notification system message from the CLI.
@@ -141,6 +157,15 @@ pub struct TaskNotificationMessage {
     pub summary: Option<String>,
     #[serde(default)]
     pub session_id: Option<String>,
+    // ── P2 Feature 11: additional fields ─────────────────────────────────────
+    #[serde(default)]
+    pub uuid: Option<String>,
+    #[serde(default)]
+    pub tool_use_id: Option<String>,
+    #[serde(default)]
+    pub output_file: Option<String>,
+    #[serde(default)]
+    pub usage: Option<serde_json::Value>,
 }
 
 /// Rate limit status from the CLI.
@@ -489,5 +514,100 @@ mod tests {
         });
         let msg = Message::parse(&raw).expect("should parse");
         assert!(matches!(msg, Message::Stream(ref s) if s.event["type"] == "message_stop"));
+    }
+
+    // ── P2 Feature 11: Complete task message fields ───────────────────────────
+
+    #[test]
+    fn task_started_message_parses_new_fields() {
+        let raw = serde_json::json!({
+            "type": "system",
+            "subtype": "task_started",
+            "data": {
+                "task_id": "t10",
+                "description": "Starting",
+                "uuid": "uuid-10",
+                "tool_use_id": "tu-10",
+                "task_type": "sub_agent"
+            }
+        });
+        let msg = Message::parse(&raw).expect("should parse");
+        match msg {
+            Message::TaskStarted(m) => {
+                assert_eq!(m.uuid.as_deref(), Some("uuid-10"));
+                assert_eq!(m.tool_use_id.as_deref(), Some("tu-10"));
+                assert_eq!(m.task_type.as_deref(), Some("sub_agent"));
+            }
+            other => panic!("expected TaskStarted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn task_progress_message_parses_new_fields() {
+        let raw = serde_json::json!({
+            "type": "system",
+            "subtype": "task_progress",
+            "data": {
+                "task_id": "t11",
+                "description": "In progress",
+                "uuid": "uuid-11",
+                "tool_use_id": "tu-11",
+                "last_tool_name": "Bash",
+                "usage": { "input_tokens": 50 }
+            }
+        });
+        let msg = Message::parse(&raw).expect("should parse");
+        match msg {
+            Message::TaskProgress(m) => {
+                assert_eq!(m.uuid.as_deref(), Some("uuid-11"));
+                assert_eq!(m.tool_use_id.as_deref(), Some("tu-11"));
+                assert_eq!(m.last_tool_name.as_deref(), Some("Bash"));
+                assert_eq!(m.usage.as_ref().unwrap()["input_tokens"], 50);
+            }
+            other => panic!("expected TaskProgress, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn task_notification_message_parses_new_fields() {
+        let raw = serde_json::json!({
+            "type": "system",
+            "subtype": "task_notification",
+            "data": {
+                "task_id": "t12",
+                "status": "completed",
+                "uuid": "uuid-12",
+                "tool_use_id": "tu-12",
+                "output_file": "/tmp/result.json",
+                "usage": { "output_tokens": 200 }
+            }
+        });
+        let msg = Message::parse(&raw).expect("should parse");
+        match msg {
+            Message::TaskNotification(m) => {
+                assert_eq!(m.uuid.as_deref(), Some("uuid-12"));
+                assert_eq!(m.tool_use_id.as_deref(), Some("tu-12"));
+                assert_eq!(m.output_file.as_deref(), Some("/tmp/result.json"));
+                assert_eq!(m.usage.as_ref().unwrap()["output_tokens"], 200);
+            }
+            other => panic!("expected TaskNotification, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn task_started_new_fields_default_to_none() {
+        let raw = serde_json::json!({
+            "type": "system",
+            "subtype": "task_started",
+            "data": { "task_id": "t20", "description": "plain" }
+        });
+        let msg = Message::parse(&raw).expect("should parse");
+        if let Message::TaskStarted(m) = msg {
+            assert!(m.uuid.is_none());
+            assert!(m.tool_use_id.is_none());
+            assert!(m.task_type.is_none());
+        } else {
+            panic!("expected TaskStarted");
+        }
     }
 }

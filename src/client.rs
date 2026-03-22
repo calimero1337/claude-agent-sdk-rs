@@ -157,6 +157,56 @@ impl ClaudeClient {
         Ok(())
     }
 
+    // ── P2 Feature 9: Bidirectional control — SDK→CLI requests ───────────────
+
+    /// Ask the CLI to switch to a different model mid-session.
+    pub async fn set_model(&mut self, model: &str) -> Result<(), ClaudeAgentError> {
+        self.send_control_request("set_model", serde_json::json!({"model": model})).await
+    }
+
+    /// Ask the CLI to change the permission mode.
+    pub async fn set_permission_mode(&mut self, mode: &str) -> Result<(), ClaudeAgentError> {
+        self.send_control_request("set_permission_mode", serde_json::json!({"mode": mode})).await
+    }
+
+    /// Ask the CLI to rewind file changes up to a previous user message.
+    pub async fn rewind_files(&mut self, user_message_id: &str) -> Result<(), ClaudeAgentError> {
+        self.send_control_request(
+            "rewind_files",
+            serde_json::json!({"user_message_id": user_message_id}),
+        )
+        .await
+    }
+
+    /// Ask the CLI to stop a specific task by ID.
+    pub async fn stop_task(&mut self, task_id: &str) -> Result<(), ClaudeAgentError> {
+        self.send_control_request("stop_task", serde_json::json!({"task_id": task_id})).await
+    }
+
+    /// Low-level helper: send a typed control request to the CLI.
+    async fn send_control_request(
+        &mut self,
+        subtype: &str,
+        data: serde_json::Value,
+    ) -> Result<(), ClaudeAgentError> {
+        let transport = self.transport.as_mut()
+            .ok_or_else(|| ClaudeAgentError::ConnectionError("not connected".into()))?;
+        let mut msg = serde_json::json!({
+            "type": "control_request",
+            "request_id": uuid::Uuid::new_v4().to_string(),
+            "request": { "subtype": subtype }
+        });
+        // Merge data fields into the request object.
+        if let Some(obj) = msg.get_mut("request").and_then(|r| r.as_object_mut()) {
+            if let Some(data_obj) = data.as_object() {
+                for (k, v) in data_obj {
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        transport.write_message(&msg).await
+    }
+
     /// Handle an inbound control request and produce the appropriate response.
     fn handle_control_request(&self, req: &ControlRequest) -> ControlResponse {
         match &req.request {
@@ -367,5 +417,35 @@ mod tests {
             matches!(err, ClaudeAgentError::ConnectionError(_)),
             "expected ConnectionError, got: {err}"
         );
+    }
+
+    // ── P2 Feature 9: SDK→CLI control requests ────────────────────────────────
+
+    #[tokio::test]
+    async fn set_model_returns_error_when_not_connected() {
+        let mut client = make_client();
+        let result = client.set_model("claude-opus-4").await;
+        assert!(matches!(result, Err(ClaudeAgentError::ConnectionError(_))));
+    }
+
+    #[tokio::test]
+    async fn set_permission_mode_returns_error_when_not_connected() {
+        let mut client = make_client();
+        let result = client.set_permission_mode("acceptEdits").await;
+        assert!(matches!(result, Err(ClaudeAgentError::ConnectionError(_))));
+    }
+
+    #[tokio::test]
+    async fn rewind_files_returns_error_when_not_connected() {
+        let mut client = make_client();
+        let result = client.rewind_files("msg-001").await;
+        assert!(matches!(result, Err(ClaudeAgentError::ConnectionError(_))));
+    }
+
+    #[tokio::test]
+    async fn stop_task_returns_error_when_not_connected() {
+        let mut client = make_client();
+        let result = client.stop_task("task-001").await;
+        assert!(matches!(result, Err(ClaudeAgentError::ConnectionError(_))));
     }
 }

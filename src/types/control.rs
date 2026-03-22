@@ -87,6 +87,35 @@ impl ControlResponse {
     }
 }
 
+// ── P2 Feature 8: Rich PermissionResult ──────────────────────────────────────
+
+/// Rich permission response with optional input/permission updates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionResultAllow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_input: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_permissions: Option<PermissionUpdate>,
+}
+
+/// Permission rule updates to apply.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionUpdate {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub add_rules: Vec<PermissionRuleValue>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remove_rules: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_mode: Option<String>,
+}
+
+/// A permission rule definition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionRuleValue {
+    pub tool_name: String,
+    pub rule_content: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +209,61 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         // `reason` field must be absent (skip_serializing_if = None).
         assert!(!json.contains("reason"));
+    }
+
+    // ── P2 Feature 8: PermissionResultAllow / PermissionUpdate ───────────────
+
+    #[test]
+    fn permission_result_allow_minimal_round_trip() {
+        let result = PermissionResultAllow {
+            updated_input: None,
+            updated_permissions: None,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        // Both optional fields must be absent.
+        assert!(!json.contains("updated_input"));
+        assert!(!json.contains("updated_permissions"));
+        let decoded: PermissionResultAllow = serde_json::from_str(&json).unwrap();
+        assert!(decoded.updated_input.is_none());
+        assert!(decoded.updated_permissions.is_none());
+    }
+
+    #[test]
+    fn permission_result_allow_with_input_update() {
+        let result = PermissionResultAllow {
+            updated_input: Some(serde_json::json!({"command": "ls -la"})),
+            updated_permissions: None,
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["updated_input"]["command"], "ls -la");
+    }
+
+    #[test]
+    fn permission_update_add_rules_round_trip() {
+        let update = PermissionUpdate {
+            add_rules: vec![PermissionRuleValue {
+                tool_name: "Bash".to_string(),
+                rule_content: "allow read-only commands".to_string(),
+            }],
+            remove_rules: vec!["old-rule".to_string()],
+            set_mode: Some("acceptEdits".to_string()),
+        };
+        let json = serde_json::to_value(&update).unwrap();
+        assert_eq!(json["add_rules"][0]["tool_name"], "Bash");
+        assert_eq!(json["remove_rules"][0], "old-rule");
+        assert_eq!(json["set_mode"], "acceptEdits");
+    }
+
+    #[test]
+    fn permission_update_empty_vecs_omitted() {
+        let update = PermissionUpdate {
+            add_rules: vec![],
+            remove_rules: vec![],
+            set_mode: None,
+        };
+        let json = serde_json::to_string(&update).unwrap();
+        assert!(!json.contains("add_rules"));
+        assert!(!json.contains("remove_rules"));
+        assert!(!json.contains("set_mode"));
     }
 }

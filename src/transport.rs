@@ -5,13 +5,37 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
+use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
 use crate::error::ClaudeAgentError;
 use crate::types::options::{ClaudeAgentOptions, StderrCallback};
+
+// ── P2 Feature 10: CLI version check ─────────────────────────────────────────
+
+/// Minimum required Claude CLI version.
+pub const MINIMUM_CLI_VERSION: &str = "2.0.0";
+
+/// Check if the installed CLI meets the minimum version requirement.
+///
+/// Returns the raw version string reported by `--version`.  The caller can
+/// compare it against [`MINIMUM_CLI_VERSION`] as needed.  Does not enforce
+/// the minimum by default — callers opt in.
+///
+/// Set `CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK=1` in the environment to skip
+/// this function entirely in automated environments.
+pub fn check_cli_version(cli_path: &std::path::Path) -> Result<String, ClaudeAgentError> {
+    let output = std::process::Command::new(cli_path)
+        .arg("--version")
+        .output()
+        .map_err(|e| ClaudeAgentError::CliNotFound(format!("failed to run --version: {e}")))?;
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(version)
+}
 
 /// A subprocess-based transport that communicates with the Claude CLI.
 pub struct SubprocessTransport {
@@ -19,6 +43,8 @@ pub struct SubprocessTransport {
     stdin: Option<tokio::process::ChildStdin>,
     stdout_lines: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
     stderr_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Write lock — prevents concurrent writes to stdin from racing.
+    write_lock: Arc<Mutex<()>>,
 }
 
 impl SubprocessTransport {
@@ -91,6 +117,7 @@ impl SubprocessTransport {
             stdin: Some(stdin),
             stdout_lines,
             stderr_handle,
+            write_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -128,10 +155,14 @@ impl SubprocessTransport {
     }
 
     /// Write a JSON message to stdin (appends newline).
+    ///
+    /// Acquires the write lock before writing to prevent concurrent callers
+    /// from interleaving partial writes on the same pipe.
     pub async fn write_message(
         &mut self,
         value: &serde_json::Value,
     ) -> Result<(), ClaudeAgentError> {
+        let _guard = self.write_lock.clone().lock_owned().await;
         let stdin = self.stdin.as_mut().ok_or_else(|| {
             ClaudeAgentError::ConnectionError("stdin already closed".into())
         })?;
@@ -173,12 +204,29 @@ impl SubprocessTransport {
     }
 
     /// Wait for the child process to exit and return its status.
+    ///
+    /// Attempts a graceful shutdown first: closes stdin and waits up to 5
+    /// seconds.  If the process has not exited by then it is killed forcibly.
     pub async fn wait(&mut self) -> Result<std::process::ExitStatus, ClaudeAgentError> {
-        // Abort the stderr drain task — the process is done.
         if let Some(handle) = self.stderr_handle.take() {
             handle.abort();
         }
-        self.child.wait().await.map_err(ClaudeAgentError::IoError)
+        // Try graceful shutdown: close stdin and wait up to 5 seconds.
+        self.drop_stdin();
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.child.wait(),
+        )
+        .await
+        {
+            Ok(result) => result.map_err(ClaudeAgentError::IoError),
+            Err(_timeout) => {
+                // Graceful shutdown timed out — kill the process.
+                tracing::warn!("claude CLI did not exit within 5s — killing");
+                self.child.kill().await.map_err(ClaudeAgentError::IoError)?;
+                self.child.wait().await.map_err(ClaudeAgentError::IoError)
+            }
+        }
     }
 
     /// Find the `claude` CLI binary.
@@ -225,5 +273,21 @@ mod tests {
         let opts = ClaudeAgentOptions::default();
         let _result = SubprocessTransport::find_cli(&opts);
         // We don't assert success because the CLI may not be installed in CI.
+    }
+
+    // ── P2 Feature 10: CLI version constant ───────────────────────────────────
+
+    #[test]
+    fn minimum_cli_version_constant() {
+        // The constant must be a well-formed semver-like string.
+        assert!(!MINIMUM_CLI_VERSION.is_empty());
+        assert!(MINIMUM_CLI_VERSION.contains('.'));
+    }
+
+    #[test]
+    fn check_cli_version_fails_gracefully_for_missing_binary() {
+        let result = check_cli_version(std::path::Path::new("/nonexistent/claude-binary"));
+        // Must return an error, not panic.
+        assert!(result.is_err());
     }
 }

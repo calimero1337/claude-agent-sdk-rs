@@ -39,6 +39,7 @@ pub mod client;
 pub mod error;
 pub mod hooks;
 pub mod query;
+pub mod session_management;
 pub mod transport;
 pub mod transport_trait;
 pub mod types;
@@ -49,8 +50,13 @@ pub use client::ClaudeClient;
 pub use error::ClaudeAgentError;
 pub use hooks::{HookHandler, NoopHookHandler};
 pub use query::{query, QueryResult};
+pub use session_management::{sanitize_tag, SessionInfo, SessionMessage};
+pub use transport::MINIMUM_CLI_VERSION;
 pub use transport_trait::Transport;
-pub use types::control::{ControlRequest, ControlRequestBody, ControlResponse, ControlResponseBody};
+pub use types::control::{
+    ControlRequest, ControlRequestBody, ControlResponse, ControlResponseBody,
+    PermissionResultAllow, PermissionRuleValue, PermissionUpdate,
+};
 pub use types::event::{ContentDelta, StopReason, StreamEvent, TokenUsage};
 pub use types::message::{
     AssistantMessage, ContentBlock, Message, RateLimitEvent, RateLimitInfo, RateLimitStatus,
@@ -58,8 +64,9 @@ pub use types::message::{
     TaskProgressMessage, TaskStartedMessage, UserMessage,
 };
 pub use types::options::{
-    AgentDefinition, ClaudeAgentOptions, Effort, McpServerConfig, PermissionMode, StderrCallback,
-    ThinkingConfig,
+    AgentDefinition, ClaudeAgentOptions, Effort, McpServerConfig, PermissionMode,
+    SandboxIgnoreViolations, SandboxNetworkConfig, SandboxSettings, SdkPluginConfig,
+    StderrCallback, ThinkingConfig,
 };
 pub use types::params::{AgentParams, AgentParamsBuilder, MaxTurns};
 pub use types::tool::{Tool, ToolChoice, ToolResult, ToolResultContent, ToolUseBlock};
