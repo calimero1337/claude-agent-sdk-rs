@@ -1,5 +1,6 @@
 //! Type definitions for the Claude Agent SDK.
 
+pub mod control;
 pub mod event;
 pub mod message;
 pub mod options;

@@ -37,6 +37,7 @@
 
 pub mod client;
 pub mod error;
+pub mod hooks;
 pub mod query;
 pub mod transport;
 pub mod types;
@@ -45,12 +46,15 @@ pub mod types;
 
 pub use client::ClaudeClient;
 pub use error::ClaudeAgentError;
+pub use hooks::{HookHandler, NoopHookHandler};
 pub use query::{query, QueryResult};
+pub use types::control::{ControlRequest, ControlRequestBody, ControlResponse, ControlResponseBody};
 pub use types::event::{ContentDelta, StopReason, StreamEvent, TokenUsage};
 pub use types::message::{
-    AssistantMessage, ContentBlock, Message, ResultMessage, Role, SystemMessage, UserMessage,
+    AssistantMessage, ContentBlock, Message, ResultMessage, Role, SystemMessage,
+    TaskNotificationMessage, TaskProgressMessage, TaskStartedMessage, UserMessage,
 };
-pub use types::options::{ClaudeAgentOptions, McpServerConfig, PermissionMode};
+pub use types::options::{ClaudeAgentOptions, Effort, McpServerConfig, PermissionMode};
 pub use types::params::{AgentParams, AgentParamsBuilder, MaxTurns};
 pub use types::tool::{Tool, ToolChoice, ToolResult, ToolResultContent, ToolUseBlock};
 

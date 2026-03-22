@@ -102,6 +102,35 @@ pub struct ResultMessage {
     pub result: Option<String>,
 }
 
+/// A task_started system message from the CLI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskStartedMessage {
+    pub task_id: String,
+    pub description: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+/// A task_progress system message from the CLI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskProgressMessage {
+    pub task_id: String,
+    pub description: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+/// A task_notification system message from the CLI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskNotificationMessage {
+    pub task_id: String,
+    pub status: String,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
 /// Parsed message from the Claude CLI.
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -109,6 +138,9 @@ pub enum Message {
     Assistant(AssistantMessage),
     System(SystemMessage),
     Result(ResultMessage),
+    TaskStarted(TaskStartedMessage),
+    TaskProgress(TaskProgressMessage),
+    TaskNotification(TaskNotificationMessage),
 }
 
 impl Message {
@@ -118,7 +150,22 @@ impl Message {
         match msg_type {
             "user" => serde_json::from_value(data.clone()).ok().map(Message::User),
             "assistant" => serde_json::from_value(data.clone()).ok().map(Message::Assistant),
-            "system" => serde_json::from_value(data.clone()).ok().map(Message::System),
+            "system" => {
+                let subtype = data.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
+                let data_field = data.get("data").cloned().unwrap_or_default();
+                match subtype {
+                    "task_started" => {
+                        serde_json::from_value(data_field).ok().map(Message::TaskStarted)
+                    }
+                    "task_progress" => {
+                        serde_json::from_value(data_field).ok().map(Message::TaskProgress)
+                    }
+                    "task_notification" => {
+                        serde_json::from_value(data_field).ok().map(Message::TaskNotification)
+                    }
+                    _ => serde_json::from_value(data.clone()).ok().map(Message::System),
+                }
+            }
             "result" => serde_json::from_value(data.clone()).ok().map(Message::Result),
             _ => None, // Forward-compatible: skip unknown types
         }
@@ -170,5 +217,38 @@ mod tests {
         assert_eq!(json, r#""user""#);
         let role: Role = serde_json::from_str(r#""assistant""#).unwrap();
         assert_eq!(role, Role::Assistant);
+    }
+
+    #[test]
+    fn parse_task_started_message() {
+        let raw = serde_json::json!({
+            "type": "system",
+            "subtype": "task_started",
+            "data": { "task_id": "t1", "description": "Starting work" }
+        });
+        let msg = Message::parse(&raw);
+        assert!(matches!(msg, Some(Message::TaskStarted(ref m)) if m.task_id == "t1"));
+    }
+
+    #[test]
+    fn parse_task_notification_message() {
+        let raw = serde_json::json!({
+            "type": "system",
+            "subtype": "task_notification",
+            "data": { "task_id": "t2", "status": "completed", "summary": "Done" }
+        });
+        let msg = Message::parse(&raw);
+        assert!(matches!(msg, Some(Message::TaskNotification(ref m)) if m.status == "completed"));
+    }
+
+    #[test]
+    fn parse_unknown_system_falls_back() {
+        let raw = serde_json::json!({
+            "type": "system",
+            "subtype": "something_new",
+            "data": { "info": "test" }
+        });
+        let msg = Message::parse(&raw);
+        assert!(matches!(msg, Some(Message::System(_))));
     }
 }

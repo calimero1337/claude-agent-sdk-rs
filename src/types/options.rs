@@ -37,6 +37,17 @@ pub enum McpServerConfig {
     },
 }
 
+/// Effort level for the Claude CLI session.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Effort {
+    Low,
+    #[default]
+    Medium,
+    High,
+    Max,
+}
+
 /// Options for a Claude agent session (subset of Python SDK's ClaudeAgentOptions).
 #[derive(Debug, Clone, Default)]
 pub struct ClaudeAgentOptions {
@@ -68,6 +79,16 @@ pub struct ClaudeAgentOptions {
     pub add_dirs: Vec<PathBuf>,
     /// Maximum output tokens per turn.
     pub max_tokens: Option<u32>,
+    /// JSON schema for structured output validation.
+    pub json_schema: Option<serde_json::Value>,
+    /// Maximum budget in USD per session.
+    pub max_budget_usd: Option<f64>,
+    /// Effort level.
+    pub effort: Option<Effort>,
+    /// Fallback model if primary is unavailable.
+    pub fallback_model: Option<String>,
+    /// Append to system prompt instead of replacing.
+    pub append_system_prompt: Option<String>,
 }
 
 impl ClaudeAgentOptions {
@@ -139,6 +160,42 @@ impl ClaudeAgentOptions {
             args.push(dir.display().to_string());
         }
 
+        if let Some(tokens) = self.max_tokens {
+            args.push("--max-tokens".to_string());
+            args.push(tokens.to_string());
+        }
+
+        if let Some(ref schema) = self.json_schema {
+            args.push("--json-schema".to_string());
+            args.push(schema.to_string());
+        }
+
+        if let Some(budget) = self.max_budget_usd {
+            args.push("--max-budget-usd".to_string());
+            args.push(format!("{:.2}", budget));
+        }
+
+        if let Some(ref effort) = self.effort {
+            let effort_str = match effort {
+                Effort::Low => "low",
+                Effort::Medium => "medium",
+                Effort::High => "high",
+                Effort::Max => "max",
+            };
+            args.push("--effort".to_string());
+            args.push(effort_str.to_string());
+        }
+
+        if let Some(ref model) = self.fallback_model {
+            args.push("--fallback-model".to_string());
+            args.push(model.clone());
+        }
+
+        if let Some(ref prompt) = self.append_system_prompt {
+            args.push("--append-system-prompt".to_string());
+            args.push(prompt.clone());
+        }
+
         args
     }
 }
@@ -173,5 +230,70 @@ mod tests {
     fn permission_mode_serialization() {
         let json = serde_json::to_string(&PermissionMode::BypassPermissions).unwrap();
         assert_eq!(json, r#""bypassPermissions""#);
+    }
+
+    #[test]
+    fn max_tokens_added_to_args() {
+        let opts = ClaudeAgentOptions {
+            max_tokens: Some(8192),
+            ..Default::default()
+        };
+        let args = opts.to_cli_args();
+        let idx = args.iter().position(|a| a == "--max-tokens").expect("--max-tokens missing");
+        assert_eq!(args[idx + 1], "8192");
+    }
+
+    #[test]
+    fn json_schema_added_to_args() {
+        let opts = ClaudeAgentOptions {
+            json_schema: Some(serde_json::json!({"type": "object"})),
+            ..Default::default()
+        };
+        let args = opts.to_cli_args();
+        assert!(args.contains(&"--json-schema".to_string()));
+    }
+
+    #[test]
+    fn max_budget_usd_added_to_args() {
+        let opts = ClaudeAgentOptions {
+            max_budget_usd: Some(0.50),
+            ..Default::default()
+        };
+        let args = opts.to_cli_args();
+        let idx = args.iter().position(|a| a == "--max-budget-usd").unwrap();
+        assert_eq!(args[idx + 1], "0.50");
+    }
+
+    #[test]
+    fn effort_added_to_args() {
+        let opts = ClaudeAgentOptions {
+            effort: Some(Effort::High),
+            ..Default::default()
+        };
+        let args = opts.to_cli_args();
+        let idx = args.iter().position(|a| a == "--effort").unwrap();
+        assert_eq!(args[idx + 1], "high");
+    }
+
+    #[test]
+    fn fallback_model_added_to_args() {
+        let opts = ClaudeAgentOptions {
+            fallback_model: Some("claude-haiku-4-5".to_string()),
+            ..Default::default()
+        };
+        let args = opts.to_cli_args();
+        let idx = args.iter().position(|a| a == "--fallback-model").unwrap();
+        assert_eq!(args[idx + 1], "claude-haiku-4-5");
+    }
+
+    #[test]
+    fn append_system_prompt_added_to_args() {
+        let opts = ClaudeAgentOptions {
+            append_system_prompt: Some("Extra context".to_string()),
+            ..Default::default()
+        };
+        let args = opts.to_cli_args();
+        let idx = args.iter().position(|a| a == "--append-system-prompt").unwrap();
+        assert_eq!(args[idx + 1], "Extra context");
     }
 }

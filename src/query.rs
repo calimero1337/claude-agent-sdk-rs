@@ -53,7 +53,12 @@ pub async fn query(
     prompt: &str,
     options: &ClaudeAgentOptions,
 ) -> Result<QueryResult, ClaudeAgentError> {
-    let mut transport = SubprocessTransport::spawn(prompt, options).await?;
+    let mut transport = SubprocessTransport::spawn(options).await?;
+    transport.send_user_message(prompt).await?;
+    // Do NOT close stdin immediately — the CLI may not have read the message yet.
+    // Instead, drop stdin after we start reading stdout. The CLI detects EOF on
+    // stdin naturally when the pipe is dropped during transport.wait().
+    transport.drop_stdin();
 
     let mut messages = Vec::new();
     let mut result_msg = None;

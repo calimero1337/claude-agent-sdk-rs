@@ -16,16 +16,13 @@ use crate::types::options::ClaudeAgentOptions;
 /// A subprocess-based transport that communicates with the Claude CLI.
 pub struct SubprocessTransport {
     child: Child,
-    stdin: tokio::process::ChildStdin,
+    stdin: Option<tokio::process::ChildStdin>,
     stdout_lines: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
 }
 
 impl SubprocessTransport {
-    /// Spawn the Claude CLI with the given prompt and options.
-    pub async fn spawn(
-        prompt: &str,
-        options: &ClaudeAgentOptions,
-    ) -> Result<Self, ClaudeAgentError> {
+    /// Spawn the Claude CLI with the given options.
+    pub async fn spawn(options: &ClaudeAgentOptions) -> Result<Self, ClaudeAgentError> {
         let cli_path = Self::find_cli(options)?;
         let cli_args = options.to_cli_args();
 
@@ -33,12 +30,13 @@ impl SubprocessTransport {
 
         let mut cmd = Command::new(&cli_path);
         cmd.args(&cli_args)
-            .arg("--print")
-            .arg(prompt)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+
+        cmd.env("CLAUDE_CODE_ENTRYPOINT", "sdk-rs");
+        cmd.env("CLAUDE_AGENT_SDK_VERSION", env!("CARGO_PKG_VERSION"));
 
         // Set working directory if configured.
         if let Some(ref cwd) = options.cwd {
@@ -71,7 +69,7 @@ impl SubprocessTransport {
 
         Ok(Self {
             child,
-            stdin,
+            stdin: Some(stdin),
             stdout_lines,
         })
     }
@@ -114,17 +112,44 @@ impl SubprocessTransport {
         &mut self,
         value: &serde_json::Value,
     ) -> Result<(), ClaudeAgentError> {
+        let stdin = self.stdin.as_mut().ok_or_else(|| {
+            ClaudeAgentError::ConnectionError("stdin already closed".into())
+        })?;
         let mut buf = serde_json::to_string(value)?;
         buf.push('\n');
-        self.stdin.write_all(buf.as_bytes()).await?;
-        self.stdin.flush().await?;
+        stdin.write_all(buf.as_bytes()).await?;
+        stdin.flush().await?;
         Ok(())
     }
 
     /// Close stdin, signalling end of input.
     pub async fn close_stdin(&mut self) -> Result<(), ClaudeAgentError> {
-        self.stdin.shutdown().await?;
+        if let Some(mut stdin) = self.stdin.take() {
+            stdin.shutdown().await?;
+        }
         Ok(())
+    }
+
+    /// Drop stdin, immediately closing the pipe and signalling EOF.
+    ///
+    /// Prefer this over [`close_stdin`] for one-shot queries — it avoids a
+    /// potential race between `shutdown()` and the child's stdin reader.
+    pub fn drop_stdin(&mut self) {
+        self.stdin.take(); // Drop closes the OS pipe → child sees EOF
+    }
+
+    /// Send a user message to the CLI via stdin in stream-json format.
+    pub async fn send_user_message(&mut self, prompt: &str) -> Result<(), ClaudeAgentError> {
+        let msg = serde_json::json!({
+            "type": "user",
+            "session_id": "",
+            "message": {
+                "role": "user",
+                "content": prompt
+            },
+            "parent_tool_use_id": null
+        });
+        self.write_message(&msg).await
     }
 
     /// Wait for the child process to exit and return its status.
